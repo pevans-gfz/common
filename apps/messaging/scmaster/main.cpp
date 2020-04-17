@@ -32,7 +32,6 @@
 
 #include "server.h"
 #include "settings.h"
-#include "timer.h"
 
 
 using namespace std;
@@ -56,25 +55,23 @@ class Master : public Application {
 	//  Application main interface
 	// ----------------------------------------------------------------------
 	public:
-		virtual bool init();
-		virtual bool run();
-		virtual void done();
+		virtual bool init() override;
+		virtual bool run() override;
+		virtual void done() override;
 
 
 	// ----------------------------------------------------------------------
 	//  Application events
 	// ----------------------------------------------------------------------
 	protected:
-		virtual bool validateParameters();
-		virtual void handleInterrupt(int);
-
-
-	private:
-		void handleWiredTimeout();
+		virtual bool validateParameters() override;
+		virtual void handleInterrupt(int) override;
 
 
 	private:
 		Broker::ServerPtr _server;
+		Util::Timer       _queueTimer;
+		Util::Timer       _statisticsTimer;
 };
 
 
@@ -203,25 +200,22 @@ bool Master::run() {
 		return false;
 	}
 
-	// Create statistics timer
-	Wired::TimerSession *timer = new Wired::TimerSession(boost::bind(&Master::handleWiredTimeout, this));
-	if ( !timer->setInterval(10,0) ) {
-		delete timer;
-		SEISCOMP_ERROR("Failed to initialize timer");
-		return false;
-	}
+	_statisticsTimer.setTimeout(10);
+	_statisticsTimer.setCallback(boost::bind(&Broker::Server::createStatisticsSnapshot, _server.get()));
+	_statisticsTimer.start();
 
-	if ( !_server->addSession(timer) ) {
-		delete timer;
-		SEISCOMP_ERROR("Failed to add timer");
-		return false;
-	}
+	_queueTimer.setTimeout(1);
+	_queueTimer.setCallback(boost::bind(&Broker::Server::triggerTimeout, _server.get()));
+	_queueTimer.start();
 
 	return _server->run();
 }
 
 
 void Master::done() {
+	_statisticsTimer.stop();
+	_queueTimer.stop();
+
 	if ( _server ) {
 		_server->shutdown();
 		_server = NULL;
@@ -257,11 +251,6 @@ bool Master::validateParameters() {
 
 void Master::handleInterrupt(int) {
 	_server->stop();
-}
-
-
-void Master::handleWiredTimeout() {
-	_server->createStatisticsSnapshot();
 }
 
 

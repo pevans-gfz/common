@@ -72,6 +72,8 @@ class QueueWorker : public Wired::Reactor, public MessageDispatcher {
 		virtual void idle();
 		virtual bool run();
 
+		void triggerTimeout();
+
 
 	// ----------------------------------------------------------------------
 	//  MessageDispatcher interface
@@ -86,6 +88,7 @@ class QueueWorker : public Wired::Reactor, public MessageDispatcher {
 	private:
 		Queue      *_queue;
 		std::mutex  _idleMutex;
+		bool        _timeout;
 };
 
 
@@ -114,6 +117,7 @@ class Server : public Wired::Server {
 
 		size_t numberOfQueues() const;
 
+		void triggerTimeout();
 		void createStatisticsSnapshot();
 
 

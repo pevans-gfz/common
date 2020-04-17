@@ -29,7 +29,6 @@
 #include <iostream>
 #include <functional>
 
-#include "timer.h"
 #include "server.h"
 #include "protocols/websocket.h"
 
@@ -47,7 +46,7 @@ namespace Broker {
 
 // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 QueueWorker::QueueWorker(Queue *queue)
-: _queue(queue) {}
+: _queue(queue), _timeout(false) {}
 // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
 
@@ -88,6 +87,11 @@ void QueueWorker::idle() {
 	// If an interrupt occured, flush the messages.
 	if ( interrupted() )
 		flushMessages(_queue);
+
+	if ( _timeout ) {
+		_queue->timeout();
+		_timeout = false;
+	}
 }
 // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
@@ -96,6 +100,7 @@ void QueueWorker::idle() {
 
 // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 bool QueueWorker::run() {
+	/*
 	Wired::TimerSessionPtr timer = new Wired::TimerSession(bind(&Queue::timeout, _queue));
 	if ( !timer->setInterval(1,0) ) {
 		SEISCOMP_ERROR("[worker@%s] Failed to initialize timer", _queue->name().c_str());
@@ -106,13 +111,23 @@ bool QueueWorker::run() {
 		SEISCOMP_ERROR("[worker@%s] Failed to add timer", _queue->name().c_str());
 		return false;
 	}
+	*/
 
 	lock();
 	bool r = Reactor::run();
 	unlock();
 	return r;
 }
+// <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
+
+
+
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+void QueueWorker::triggerTimeout() {
+	_timeout = true;
+	interrupt();
+}
 // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
 
@@ -207,6 +222,16 @@ Queue *Server::getQueue(const std::string &name, Client *,
 // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 size_t Server::numberOfQueues() const {
 	return _queues.size();
+}
+// <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+
+
+
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+void Server::triggerTimeout() {
+	for ( Queues::iterator it = _queues.begin(); it != _queues.end(); ++it )
+		it->second.worker->triggerTimeout();
 }
 // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
