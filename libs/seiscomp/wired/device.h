@@ -49,6 +49,7 @@
 
 #include <list>
 #include <stdint.h>
+#include <functional>
 
 
 namespace Seiscomp {
@@ -192,7 +193,7 @@ class SC_SYSTEM_CORE_API Device : public Core::BaseObject {
 
 class SC_SYSTEM_CORE_API DeviceGroup : public Core::BaseObject {
 	// ----------------------------------------------------------------------
-	//  Public enumerations
+	//  Public enumerations and types
 	// ----------------------------------------------------------------------
 	public:
 		/**
@@ -204,6 +205,8 @@ class SC_SYSTEM_CORE_API DeviceGroup : public Core::BaseObject {
 			EdgeTriggered,
 			LevelTriggered
 		};
+
+		typedef std::function<void ()> TimeoutFunc;
 
 
 	// ----------------------------------------------------------------------
@@ -244,6 +247,9 @@ class SC_SYSTEM_CORE_API DeviceGroup : public Core::BaseObject {
 		int count() const;
 
 		void clear();
+
+		bool setTimer(uint32_t seconds, uint32_t milliseconds, TimeoutFunc func);
+		bool clearTimer();
 
 		/**
 		 * @brief Interrupt the blocking wait.
@@ -290,6 +296,12 @@ class SC_SYSTEM_CORE_API DeviceGroup : public Core::BaseObject {
 		bool                 _timedOut;
 		bool                 _isInSelect;
 		bool                 _isInterrupted;
+
+		uint32_t             _timerSeconds;
+		uint32_t             _timerMilliseconds;
+		bool                 _timerSingleShot;
+		TimeoutFunc          _fnTimeout;
+		int                  _timerFd;
 
 		int                  _interrupt_read_fd;
 		int                  _interrupt_write_fd;

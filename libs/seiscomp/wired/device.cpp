@@ -25,6 +25,9 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #ifndef WIN32
+	#ifndef MACOSX
+	#include <sys/timerfd.h>
+	#endif
 #include <netdb.h>
 #include <unistd.h>
 
@@ -239,6 +242,8 @@ int Device::fd() const {
 // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 DeviceGroup::DeviceGroup() {
 	_interrupt_read_fd = _interrupt_write_fd = -1;
+	_timerFd = -1;
+	_timerSingleShot = false;
 	_queue = nullptr;
 	_isInSelect = false;
 #ifdef SEISCOMP_WIRED_SELECT
@@ -274,6 +279,10 @@ DeviceGroup::~DeviceGroup() {
 		_epoll_fd = -1;
 	}
 
+	if ( _timerFd > 0 ) {
+		::close(_timerFd);
+		_timerFd = -1;
+	}
 #endif
 #ifdef SEISCOMP_WIRED_KQUEUE
 	if ( _kqueue_fd > 0 ) {
@@ -610,18 +619,22 @@ void DeviceGroup::clear() {
 #if defined(SEISCOMP_WIRED_EPOLL) || defined(SEISCOMP_WIRED_KQUEUE)
 	_count = 0;
 	_selectIndex = _selectSize = -1;
-  #ifdef SEISCOMP_WIRED_EPOLL
+	#ifdef SEISCOMP_WIRED_EPOLL
 	if ( _epoll_fd > 0 ) {
 		::close(_epoll_fd);
 		_epoll_fd = -1;
 	}
-  #endif
-  #ifdef SEISCOMP_WIRED_KQUEUE
+	if ( _timerFd > 0 ) {
+		::close(_timerFd);
+		_timerFd = -1;
+	}
+	#endif
+	#ifdef SEISCOMP_WIRED_KQUEUE
 	if ( _kqueue_fd > 0 ) {
 		::close(_kqueue_fd);
 		_kqueue_fd = -1;
 	}
-  #endif
+	#endif
 	if ( _interrupt_write_fd != -1 && _interrupt_write_fd != _interrupt_read_fd )
 		::close(_interrupt_write_fd);
 	if ( _interrupt_read_fd != -1 )
@@ -629,6 +642,133 @@ void DeviceGroup::clear() {
 
 	_interrupt_read_fd = _interrupt_write_fd = -1;
 #endif
+}
+// <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+
+
+
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+bool DeviceGroup::setTimer(uint32_t seconds, uint32_t milliseconds, TimeoutFunc func) {
+	if ( !func ) {
+		SEISCOMP_ERROR("Failed to create timer: function required");
+		return false;
+	}
+
+	_fnTimeout = func;
+	_timerSeconds = seconds;
+	_timerMilliseconds = milliseconds;
+	_timerSingleShot = false;
+
+#ifdef SEISCOMP_WIRED_EPOLL
+	if ( _epoll_fd <= 0 && !setup() ) return false;
+
+	if ( _timerFd <= 0 ) {
+		_timerFd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+		if ( _timerFd <= 0 ) {
+			SEISCOMP_ERROR("Failed to create timer: %d: %s", errno, strerror(errno));
+			return false;
+		}
+
+		// Add timer to epoll
+		struct epoll_event ev;
+		ev.events = _defaultOps | EPOLLIN;
+		ev.data.ptr = &_timerFd;
+
+		if ( epoll_ctl(_epoll_fd, EPOLL_CTL_ADD, _timerFd, &ev) == -1 ) {
+			SEISCOMP_ERROR("epoll_add_timer(%d, %d): %d: %s",
+			               _epoll_fd, _timerFd, errno, strerror(errno));
+			::close(_timerFd);
+			_timerFd = -1;
+			return false;
+		}
+	}
+
+	if ( _timerFd > 0 ) {
+		itimerspec newValue;
+		timespec ts;
+		ts.tv_sec = _timerSeconds;
+		ts.tv_nsec = _timerMilliseconds * 1000000;
+
+		newValue.it_value = ts;
+		if ( !_timerSingleShot )
+			newValue.it_interval = ts;
+		else {
+			newValue.it_interval.tv_sec = 0;
+			newValue.it_interval.tv_nsec = 0;
+		}
+
+		if ( timerfd_settime(_timerFd, 0, &newValue, nullptr) < 0 ) {
+			SEISCOMP_ERROR("Failed to setup timer: %d: %s", errno, strerror(errno));
+			clearTimer();
+			return false;
+		}
+
+		return true;
+	}
+#endif
+#ifdef SEISCOMP_WIRED_KQUEUE
+	if ( _kqueue_fd <= 0 && !setup() ) return false;
+
+	struct kevent ev;
+	int flags = EV_CLEAR;
+
+	if ( _timerFd <= 0 ) {
+		flags |= EV_ADD;
+		_timerFd = 1;
+	}
+
+	if ( _timerSingleShot )
+		flags |= EV_ONESHOT;
+
+	EV_SET(&ev, _timerFd, EVFILT_TIMER, flags, 0, _timerSeconds * 1000 + _timerMilliseconds, &_timerFd);
+
+	if ( kevent(_kqueue_fd, ev, 1, nullptr, 0, nullptr) == -1 ) {
+		SEISCOMP_ERROR("Failed to setup timer: %d: %s", errno, strerror(errno));
+		clearTimer();
+		return false;
+	}
+
+	return true;
+#endif
+
+	return false;
+}
+// <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+
+
+
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+bool DeviceGroup::clearTimer() {
+	if ( _timerFd > 0 ) {
+		// Remove from event queue
+		for ( int i = _selectIndex; i < _selectSize; ++i ) {
+			// Is this device still queued in the epoll event list?
+			if ( _epoll_events[i].data.ptr == &_timerFd ) {
+				// Remove it
+				--_selectSize;
+				if ( i < _selectSize )
+					memcpy(_epoll_events+i, _epoll_events+i+1, sizeof(struct epoll_event)*(_selectSize-i));
+			}
+		}
+
+#ifdef SEISCOMP_WIRED_EPOLL
+		struct epoll_event ev;
+		if ( epoll_ctl(_epoll_fd, EPOLL_CTL_DEL, _timerFd, &ev) == -1 )
+			SEISCOMP_WARNING("epoll_del(%d): %d: %s",
+			                 _timerFd, errno, strerror(errno));
+		::close(_timerFd);
+#endif
+#ifdef SEISCOMP_WIRED_KQUEUE
+		struct kevent ev;
+		EV_SET(&ev, _timerFd, EVFILT_TIMER, EV_DELETE, 0, 0, nullptr);
+#endif
+		_timerFd = -1;
+		return true;
+	}
+
+	return false;
 }
 // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
@@ -906,6 +1046,19 @@ Device *DeviceGroup::next() {
 			continue;
 		}
 		else {
+			if ( (void*)device == &_timerFd ) {
+				++_selectIndex;
+	#ifdef SEISCOMP_WIRED_EPOLL
+				uint64_t value;
+				if ( ::read(_timerFd, &value, sizeof(value)) == sizeof(value) )
+					_fnTimeout();
+	#endif
+	#ifdef SEISCOMP_WIRED_KQUEUE
+				_fnTimeout();
+	#endif
+				continue;
+			}
+
 			// Reset ticker and sort item into the correct position
 			if ( device->_timeout >= 0 ) applyTimeout(device);
 		}

@@ -748,6 +748,8 @@ void Queue::shutdown() {
 
 // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 void Queue::timeout() {
+	std::cerr << "Timeout" << std::endl;
+
 	static string ConstantInfo =
 		string(Status::Tag(Status::Hostname).toString()) + "=" + HostInfo.name() + "&" +
 		string(Status::Tag(Status::Programname).toString()) + "=" + HostInfo.programName() + "&" +
